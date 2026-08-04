@@ -7,17 +7,21 @@ on:
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    # Must match the Environment name configured on npm Trusted Publisher
+    environment: NPM_PUBLISH
     permissions:
       contents: read
       # Required for npm Trusted Publishing (OIDC) + provenance
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      # Do not set registry-url here: actions/setup-node would export a
+      # placeholder NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX into every step,
+      # which forces token auth and blocks OIDC trusted publishing.
       - uses: actions/setup-node@v4
         with:
           # Node 24 ships npm >= 11.5.1, required for OIDC trusted publishing
           node-version: "24"
-          registry-url: https://registry.npmjs.org
       - name: Install dependencies
         run: npm ci
       - name: Run tests
@@ -35,4 +39,6 @@ jobs:
       # No NODE_AUTH_TOKEN: npm uses GitHub OIDC via Trusted Publisher.
       # Provenance is generated automatically with trusted publishing.
       - name: Publish to NPM
-        run: npm publish --access public
+        run: |
+          unset NODE_AUTH_TOKEN
+          npm publish --access public
