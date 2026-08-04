@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+    buildHtmlResult,
+    buildImageResult,
     ensureExtension,
+    ensureMarkmapBasename,
+    resolveOpen,
     sanitizeFilename
 } from "../../src/mcp/tools/markmap-tools.js";
 
@@ -90,5 +94,143 @@ describe("ensureExtension", () => {
 
     it("handles jpg extension", () => {
         expect(ensureExtension("photo", ".jpg")).toBe("photo.jpg");
+    });
+});
+
+describe("ensureMarkmapBasename", () => {
+    it("keeps names that already start with markmap", () => {
+        expect(ensureMarkmapBasename("markmap-notes")).toBe("markmap-notes");
+        expect(ensureMarkmapBasename("markmap")).toBe("markmap");
+    });
+
+    it("prefixes custom names so list/cleanup can discover them", () => {
+        expect(ensureMarkmapBasename("architecture")).toBe(
+            "markmap-architecture"
+        );
+        expect(ensureMarkmapBasename("思维导图")).toBe("markmap-思维导图");
+    });
+});
+
+describe("resolveOpen", () => {
+    it('returns true when server mode is "always" (ignores tool param)', () => {
+        expect(resolveOpen("always", undefined)).toBe(true);
+        expect(resolveOpen("always", false)).toBe(true);
+        expect(resolveOpen("always", true)).toBe(true);
+    });
+
+    it('returns false when server mode is "never" (ignores tool param)', () => {
+        expect(resolveOpen("never", undefined)).toBe(false);
+        expect(resolveOpen("never", false)).toBe(false);
+        expect(resolveOpen("never", true)).toBe(false);
+    });
+
+    it('delegates to tool param when server mode is "agent"', () => {
+        expect(resolveOpen("agent", true)).toBe(true);
+        expect(resolveOpen("agent", false)).toBe(false);
+    });
+
+    it('defaults to false when tool param is undefined in "agent" mode', () => {
+        expect(resolveOpen("agent", undefined)).toBe(false);
+    });
+});
+
+describe("buildHtmlResult", () => {
+    const filePath = "/tmp/markmap-demo.html";
+    const html = "<html>mindmap</html>";
+
+    it("path mode returns paths JSON only", () => {
+        const blocks = buildHtmlResult(filePath, html, "path");
+        expect(blocks).toEqual([
+            {
+                type: "text",
+                text: JSON.stringify({
+                    htmlFilePath: filePath,
+                    filePath
+                })
+            }
+        ]);
+    });
+
+    it("content mode returns raw HTML only", () => {
+        const blocks = buildHtmlResult(filePath, html, "content");
+        expect(blocks).toEqual([{ type: "text", text: html }]);
+    });
+
+    it("both mode returns paths JSON then HTML", () => {
+        const blocks = buildHtmlResult(filePath, html, "both");
+        expect(blocks).toEqual([
+            {
+                type: "text",
+                text: JSON.stringify({
+                    htmlFilePath: filePath,
+                    filePath
+                })
+            },
+            { type: "text", text: html }
+        ]);
+    });
+
+    it("content mode falls back to paths when HTML is oversized", () => {
+        const oversized = "x".repeat(200_000);
+        const blocks = buildHtmlResult(filePath, oversized, "content");
+        expect(blocks).toEqual([
+            {
+                type: "text",
+                text: JSON.stringify({
+                    htmlFilePath: filePath,
+                    filePath
+                })
+            }
+        ]);
+    });
+
+    it("both mode omits HTML when oversized but keeps paths", () => {
+        const oversized = "x".repeat(200_000);
+        const blocks = buildHtmlResult(filePath, oversized, "both");
+        expect(blocks).toEqual([
+            {
+                type: "text",
+                text: JSON.stringify({
+                    htmlFilePath: filePath,
+                    filePath
+                })
+            }
+        ]);
+    });
+});
+
+describe("buildImageResult", () => {
+    const htmlFilePath = "/tmp/markmap-demo.html";
+    const imagePath = "/tmp/markmap-demo.png";
+    const exported = {
+        buffer: Buffer.from("fake-png"),
+        mimeType: "image/png"
+    };
+    const imageBlock = {
+        type: "image" as const,
+        data: exported.buffer.toString("base64"),
+        mimeType: "image/png"
+    };
+    const pathBlock = {
+        type: "text" as const,
+        text: JSON.stringify({ htmlFilePath, filePath: imagePath })
+    };
+
+    it("path mode returns paths JSON only", () => {
+        expect(
+            buildImageResult(htmlFilePath, imagePath, exported, "path")
+        ).toEqual([pathBlock]);
+    });
+
+    it("content mode returns image block only", () => {
+        expect(
+            buildImageResult(htmlFilePath, imagePath, exported, "content")
+        ).toEqual([imageBlock]);
+    });
+
+    it("both mode returns paths JSON then image", () => {
+        expect(
+            buildImageResult(htmlFilePath, imagePath, exported, "both")
+        ).toEqual([pathBlock, imageBlock]);
     });
 });

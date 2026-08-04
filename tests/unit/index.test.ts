@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseBoolean, parseReturnMode } from "../../src/index.js";
+import {
+    parseBoolean,
+    parseCliOpenMode,
+    parseOpenMode,
+    parseReturnMode
+} from "../../src/index.js";
 
 describe("parseBoolean", () => {
     describe("returns default when value is undefined or empty", () => {
@@ -94,5 +99,102 @@ describe("parseReturnMode", () => {
 
     it('returns "path" as default for empty string', () => {
         expect(parseReturnMode("")).toBe("path");
+    });
+});
+
+describe("parseOpenMode", () => {
+    describe("returns default when value is undefined or empty", () => {
+        it('returns default "always" when undefined', () => {
+            expect(parseOpenMode(undefined, "always")).toBe("always");
+        });
+
+        it('returns default "never" when undefined', () => {
+            expect(parseOpenMode(undefined, "never")).toBe("never");
+        });
+
+        it("returns default when empty string", () => {
+            expect(parseOpenMode("", "agent")).toBe("agent");
+        });
+    });
+
+    describe('parses "always"', () => {
+        it('parses "always" as "always"', () => {
+            expect(parseOpenMode("always", "never")).toBe("always");
+        });
+
+        it('parses "ALWAYS" (case-insensitive) as "always"', () => {
+            expect(parseOpenMode("ALWAYS", "never")).toBe("always");
+        });
+    });
+
+    describe('parses "never"', () => {
+        it('parses "never" as "never"', () => {
+            expect(parseOpenMode("never", "always")).toBe("never");
+        });
+
+        it('parses "NEVER" (case-insensitive) as "never"', () => {
+            expect(parseOpenMode("NEVER", "always")).toBe("never");
+        });
+    });
+
+    describe('parses "agent"', () => {
+        it('parses "agent" as "agent"', () => {
+            expect(parseOpenMode("agent", "never")).toBe("agent");
+        });
+
+        it('parses "AGENT" (case-insensitive) as "agent"', () => {
+            expect(parseOpenMode("AGENT", "never")).toBe("agent");
+        });
+    });
+
+    describe("returns default for unknown values", () => {
+        it('returns default "always" for random string', () => {
+            expect(parseOpenMode("maybe", "always")).toBe("always");
+        });
+
+        it('returns default "never" for random string', () => {
+            expect(parseOpenMode("unknown", "never")).toBe("never");
+        });
+
+        it('returns default for legacy "true" (no backward compat)', () => {
+            expect(parseOpenMode("true", "never")).toBe("never");
+        });
+
+        it('returns default for legacy "false" (no backward compat)', () => {
+            expect(parseOpenMode("false", "always")).toBe("always");
+        });
+    });
+
+    describe("handles whitespace in string values", () => {
+        it("trims whitespace", () => {
+            expect(parseOpenMode(" always ", "never")).toBe("always");
+            expect(parseOpenMode(" never ", "always")).toBe("never");
+            expect(parseOpenMode(" agent ", "never")).toBe("agent");
+        });
+    });
+});
+
+describe("parseCliOpenMode", () => {
+    it.each(["always", "never", "agent"] as const)("accepts '%s'", (mode) => {
+        expect(parseCliOpenMode(mode)).toBe(mode);
+    });
+
+    it("accepts case-insensitive and trimmed values", () => {
+        expect(parseCliOpenMode(" ALWAYS ")).toBe("always");
+        expect(parseCliOpenMode("Never")).toBe("never");
+        expect(parseCliOpenMode("AGENT")).toBe("agent");
+    });
+
+    it('defaults bare --open (empty / boolean / undefined) to "always"', () => {
+        expect(parseCliOpenMode(undefined)).toBe("always");
+        expect(parseCliOpenMode("")).toBe("always");
+        expect(parseCliOpenMode(true)).toBe("always");
+        expect(parseCliOpenMode(false)).toBe("always");
+    });
+
+    it("rejects invalid strings", () => {
+        expect(parseCliOpenMode("maybe")).toBeUndefined();
+        expect(parseCliOpenMode("true")).toBeUndefined();
+        expect(parseCliOpenMode("1")).toBeUndefined();
     });
 });

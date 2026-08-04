@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
     type MarkmapMcpContext,
+    type OpenMode,
     type ReturnMode
 } from "./mcp/tools/context.js";
 import { registerMarkmapTools } from "./mcp/tools/markmap-tools.js";
@@ -36,6 +37,47 @@ export function parseBoolean(
     return defaultValue;
 }
 
+export function parseOpenMode(
+    value: string | undefined,
+    defaultValue: OpenMode
+): OpenMode {
+    if (value === undefined || value === "") {
+        return defaultValue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (
+        normalized === "always" ||
+        normalized === "never" ||
+        normalized === "agent"
+    ) {
+        return normalized;
+    }
+    return defaultValue;
+}
+
+/**
+ * Parse CLI `--open [mode]`:
+ * - bare `--open` (empty / boolean) → "always"
+ * - always | never | agent → that mode
+ * - anything else → undefined (caller should exit with error)
+ */
+export function parseCliOpenMode(
+    value: string | boolean | undefined
+): OpenMode | undefined {
+    if (value === undefined || value === "" || typeof value === "boolean") {
+        return "always";
+    }
+    const normalized = value.trim().toLowerCase();
+    if (
+        normalized === "always" ||
+        normalized === "never" ||
+        normalized === "agent"
+    ) {
+        return normalized;
+    }
+    return undefined;
+}
+
 export function parseReturnMode(value: string | undefined): ReturnMode {
     if (value === "content" || value === "both" || value === "path") {
         return value;
@@ -51,8 +93,8 @@ function parseArgs(): Omit<MarkmapMcpContext, "output"> & {
     output?: string;
 } {
     const args = minimist(process.argv.slice(2), {
-        string: ["output", "return-mode"],
-        boolean: ["help", "open", "offline"],
+        string: ["output", "return-mode", "open"],
+        boolean: ["help", "offline"],
         alias: {
             o: "output",
             h: "help"
@@ -66,22 +108,32 @@ function parseArgs(): Omit<MarkmapMcpContext, "output"> & {
 
   Options:
     --output, -o <dir>         Output directory for generated files
-    --open                     Open generated files in the default browser
+    --open [mode]              Open mode: always | never | agent (bare --open = always)
     --return-mode <mode>       path | content | both (default: path)
     --offline                  Inline assets for offline HTML
     --help, -h                 Show this help message
 
   Environment (CLI flags override env):
     MARKMAP_DIR                Output directory
-    MARKMAP_OPEN               Open in browser (true/false)
+    MARKMAP_OPEN               always | never | agent (default: never)
     MARKMAP_RETURN_MODE        path | content | both
     MARKMAP_OFFLINE            Inline assets (true/false)`);
         process.exit(0);
     }
 
-    const open = hasFlag("--open")
-        ? true
-        : parseBoolean(process.env.MARKMAP_OPEN, false);
+    let open: OpenMode;
+    if (hasFlag("--open")) {
+        const mode = parseCliOpenMode(args.open as string | undefined);
+        if (!mode) {
+            console.error(
+                "Error: invalid --open value. Expected: always | never | agent"
+            );
+            process.exit(1);
+        }
+        open = mode;
+    } else {
+        open = parseOpenMode(process.env.MARKMAP_OPEN, "never");
+    }
 
     const offline = hasFlag("--offline")
         ? true

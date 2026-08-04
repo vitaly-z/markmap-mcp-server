@@ -13,10 +13,14 @@ import {
     getMindmap,
     listMindmaps
 } from "../../markmap/lifecycle.js";
-import { MarkmapMcpContext, type ReturnMode } from "./context.js";
+import {
+    MarkmapMcpContext,
+    type OpenMode,
+    type ReturnMode
+} from "./context.js";
 import { ToolRegistry } from "./tool-registry.js";
 
-export type { MarkmapMcpContext, ReturnMode } from "./context.js";
+export type { MarkmapMcpContext, OpenMode, ReturnMode } from "./context.js";
 
 export function sanitizeFilename(name: string): string {
     const base = basename(name).replace(/\.[^.]+$/, "");
@@ -35,30 +39,91 @@ export function ensureExtension(filename: string, ext: string): string {
     return `${filename.replace(/\.[^.]+$/, "")}${normalized}`;
 }
 
+/** Ensures output basename is discoverable by list_mindmaps / cleanup_mindmaps. */
+export function ensureMarkmapBasename(name: string): string {
+    return name.startsWith("markmap") ? name : `markmap-${name}`;
+}
+
+/**
+ * Resolves whether to open the generated file based on server mode and
+ * the agent's per-call preference.
+ */
+export function resolveOpen(
+    serverMode: OpenMode,
+    toolParam: boolean | undefined
+): boolean {
+    if (serverMode === "always") return true;
+    if (serverMode === "never") return false;
+    return toolParam ?? false; // "agent" mode, default to not open
+}
+
 type ContentBlock =
     | { type: "text"; text: string }
     | { type: "image"; data: string; mimeType: string };
 
-function buildHtmlResult(
+function pathPayload(htmlFilePath: string, filePath: string): ContentBlock {
+    return {
+        type: "text",
+        text: JSON.stringify({ htmlFilePath, filePath })
+    };
+}
+
+/**
+ * Builds the MCP content blocks for an HTML result according to returnMode:
+ * - path: paths JSON only
+ * - content: raw HTML only (falls back to paths if HTML ≥ 200KB)
+ * - both: paths JSON + raw HTML when eligible
+ */
+export function buildHtmlResult(
     filePath: string,
     html: string,
     returnMode: ReturnMode
 ): ContentBlock[] {
-    const blocks: ContentBlock[] = [
-        {
-            type: "text",
-            text: JSON.stringify({ htmlFilePath: filePath, filePath })
-        }
-    ];
+    const paths = pathPayload(filePath, filePath);
+    const canInline = html.length < 200_000;
 
-    if (
-        (returnMode === "content" || returnMode === "both") &&
-        html.length < 200_000
-    ) {
-        blocks.push({ type: "text", text: html });
+    if (returnMode === "path") {
+        return [paths];
     }
 
+    if (returnMode === "content") {
+        return canInline ? [{ type: "text", text: html }] : [paths];
+    }
+
+    // both
+    const blocks: ContentBlock[] = [paths];
+    if (canInline) {
+        blocks.push({ type: "text", text: html });
+    }
     return blocks;
+}
+
+/**
+ * Builds the MCP content blocks for an image/SVG export according to returnMode:
+ * - path: paths JSON only
+ * - content: image block only
+ * - both: paths JSON + image block
+ */
+export function buildImageResult(
+    htmlFilePath: string,
+    imagePath: string,
+    exported: { buffer: Buffer; mimeType: string },
+    returnMode: ReturnMode
+): ContentBlock[] {
+    const paths = pathPayload(htmlFilePath, imagePath);
+    const imageBlock: ContentBlock = {
+        type: "image",
+        data: exported.buffer.toString("base64"),
+        mimeType: exported.mimeType
+    };
+
+    if (returnMode === "path") {
+        return [paths];
+    }
+    if (returnMode === "content") {
+        return [imageBlock];
+    }
+    return [paths, imageBlock];
 }
 
 export class MarkmapToolRegistry extends ToolRegistry {
@@ -72,59 +137,101 @@ export class MarkmapToolRegistry extends ToolRegistry {
 
     private buildToolDescription(): string {
         const { returnMode, open, offline } = this.context;
-        return `Convert Markdown into an interactive mind map (markmap HTML), with optional server-side PNG/JPG/SVG export.
+        const modeHint =
+            returnMode === "path"
+                ? "Paths JSON only — no inline content."
+                : returnMode === "content"
+                  ? "Inline content only (raw HTML text <200KB, or base64 image block). No paths JSON; oversized HTML falls back to paths."
+                  : "Paths JSON plus inline content when eligible (HTML text <200KB, or base64 image block).";
+        const openHint =
+            open === "always"
+                ? "The server always opens the result in the default browser."
+                : open === "never"
+                  ? "The server never opens the browser."
+                  : "The server delegates to the agent — set the `open` parameter to control whether the browser opens.";
+        const responseHint =
+            returnMode === "content"
+                ? "Inline content only (no paths JSON unless HTML is oversized)."
+                : 'JSON {"htmlFilePath":"<path>","filePath":"<path>"} — htmlFilePath is always the HTML source; filePath is the primary artifact (HTML or image).';
+        return `Convert structured Markdown (headings # and nested lists -) into an interactive mind map HTML file, with optional server-side PNG/JPG/SVG export.
 
-When to use:
-- User wants a visual mind map / outline from structured Markdown (headings # and nested lists -)
-- User asks to visualize notes, architecture, plans, or hierarchies
+Use when the user wants a visual mind map/outline of structured content (architecture, plans, notes, hierarchies), or asks to visualize / mindmap / diagram. Do not use for flat unstructured text (restructure first), or to list/read existing outputs (use list_mindmaps / get_mindmap).
 
-Input tips:
-- Prefer headings and nested lists for a clear tree
-- Pass inputPath instead of markdown when the source is already a local .md file (saves tokens)
-- Either markdown or inputPath is required (but not both)
-- Set format to png/svg/jpg for Agent-consumable images (requires Playwright/Chromium)
+Behavior:
+- WRITES files under the configured output dir. HTML is always written; image formats write an extra file. Reusing filename overwrites.
+- html is fast (<1s). png/svg/jpg launch headless Chromium via Playwright (5–15s; requires: npm install playwright && npx playwright install chromium).
+- Local only — no external APIs or third-party keys. Open mode=${open}: ${openHint}
+- Offline=${offline} (server config).
 
-Server configuration (set at startup, not tool arguments):
-- Return mode: ${returnMode}
-- Open in browser: ${open}
-- Offline: ${offline}
-
-Privacy: generation is local; no third-party API keys required.`;
+Response:
+- ${responseHint}
+- Return mode=${returnMode}: ${modeHint}
+- Errors: isError:true with {"error","message"}.`;
     }
 
     private registerMarkdownToMindmap(): void {
+        const inputSchema: Record<string, z.ZodTypeAny> = {
+            markdown: z
+                .string()
+                .optional()
+                .describe(
+                    "Full Markdown document string (not a file path). Prefer ATX headings (# ## ###) and nested lists. Provide this or inputPath (at least one required). If both are set, markdown wins."
+                ),
+            inputPath: z
+                .string()
+                .optional()
+                .describe(
+                    "Absolute path to a local .md file. Prefer over markdown when content is >1KB already on disk (saves tokens). Ignored when markdown is also provided."
+                ),
+            format: z
+                .enum(["html", "png", "svg", "jpg"])
+                .optional()
+                .describe(
+                    "Output format (default: html). Use html for interactive viewing; png/jpg/svg when the agent or user needs an image (Playwright required)."
+                ),
+            filename: z
+                .string()
+                .optional()
+                .describe(
+                    "Output base name only (no directories). Omit for markmap-<timestamp>. Custom names are prefixed with markmap- if needed so list/cleanup can find them. Same name overwrites."
+                )
+        };
+
+        // `open` is only exposed when server open mode is `agent`
+        if (this.context.open === "agent") {
+            inputSchema.open = z
+                .boolean()
+                .optional()
+                .describe(
+                    "Whether to open the result in the default browser. Defaults to false."
+                );
+        }
+
         this.server.tool(
             "markdown_to_mindmap",
             this.buildToolDescription(),
+            inputSchema,
             {
-                markdown: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Markdown content to convert. Required unless inputPath is set."
-                    ),
-                inputPath: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Absolute path to a local Markdown file. Used when markdown is omitted."
-                    ),
-                format: z
-                    .enum(["html", "png", "svg", "jpg"])
-                    .optional()
-                    .describe(
-                        "Output format (default: html). png/svg/jpg use Playwright server-side export."
-                    ),
-                filename: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Optional output base filename (without path). Reusing the same name overwrites."
-                    )
+                title: "Markdown to Mind Map",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
             },
-            async ({ markdown, inputPath, format, filename }) => {
+            async (args) => {
+                const markdown = args.markdown as string | undefined;
+                const inputPath = args.inputPath as string | undefined;
+                const format = args.format as
+                    | "html"
+                    | "png"
+                    | "svg"
+                    | "jpg"
+                    | undefined;
+                const filename = args.filename as string | undefined;
+                const openParam = args.open as boolean | undefined;
                 const outputFormat = format ?? "html";
-                const { open, returnMode, offline } = this.context;
+                const { open: serverOpen, returnMode, offline } = this.context;
+                const shouldOpen = resolveOpen(serverOpen, openParam);
 
                 try {
                     if (!markdown && !inputPath) {
@@ -146,7 +253,7 @@ Privacy: generation is local; no third-party API keys required.`;
                         (await fs.readFile(inputPath as string, "utf8"));
 
                     const baseName = filename
-                        ? sanitizeFilename(filename)
+                        ? ensureMarkmapBasename(sanitizeFilename(filename))
                         : `markmap-${Date.now()}`;
                     const htmlPath = join(
                         this.context.output,
@@ -156,25 +263,11 @@ Privacy: generation is local; no third-party API keys required.`;
                     const result = await createMarkmap({
                         content,
                         output: htmlPath,
-                        openIt: open && outputFormat === "html",
+                        openIt: shouldOpen && outputFormat === "html",
                         offline
                     });
 
                     if (outputFormat === "html") {
-                        // Unified shape: always include htmlFilePath + filePath
-                        if (returnMode === "path") {
-                            return {
-                                content: [
-                                    {
-                                        type: "text",
-                                        text: JSON.stringify({
-                                            htmlFilePath: result.filePath,
-                                            filePath: result.filePath
-                                        })
-                                    }
-                                ]
-                            };
-                        }
                         return {
                             content: buildHtmlResult(
                                 result.filePath,
@@ -196,30 +289,19 @@ Privacy: generation is local; no third-party API keys required.`;
                     );
                     await writeImageFile(imagePath, exported);
 
-                    if (open) {
+                    if (shouldOpen) {
                         const { default: openFile } = await import("open");
                         await openFile(imagePath);
                     }
 
-                    // Unified shape: always include both paths
-                    const payload: Record<string, string> = {
-                        htmlFilePath: result.filePath,
-                        filePath: imagePath
+                    return {
+                        content: buildImageResult(
+                            result.filePath,
+                            imagePath,
+                            exported,
+                            returnMode
+                        )
                     };
-
-                    const blocks: ContentBlock[] = [
-                        { type: "text", text: JSON.stringify(payload) }
-                    ];
-
-                    if (returnMode === "content" || returnMode === "both") {
-                        blocks.push({
-                            type: "image",
-                            data: exported.buffer.toString("base64"),
-                            mimeType: exported.mimeType
-                        });
-                    }
-
-                    return { content: blocks };
                 } catch (error: unknown) {
                     const message =
                         error instanceof Error ? error.message : String(error);
@@ -243,7 +325,7 @@ Privacy: generation is local; no third-party API keys required.`;
     private registerListMindmaps(): void {
         this.server.tool(
             "list_mindmaps",
-            "List recently generated mind map files in the configured output directory.",
+            'List markmap* files (html/png/jpg/jpeg/svg) in the output directory, newest first. Read-only — no side effects. Missing/empty dirs return {"files":[]}.\n\nReturns: {"outputDir","files":[{"name","filePath","size","mtimeMs","mtime"}]} (mtime is ISO 8601).\n\nUse before get_mindmap to discover paths, or before cleanup_mindmaps to preview targets. Not for generating new mind maps (use markdown_to_mindmap).',
             {
                 limit: z
                     .number()
@@ -251,7 +333,16 @@ Privacy: generation is local; no third-party API keys required.`;
                     .min(1)
                     .max(200)
                     .optional()
-                    .describe("Maximum number of files to return (default: 20)")
+                    .describe(
+                        "Max files to return (default: 20, max: 200). Newest files are kept when truncating."
+                    )
+            },
+            {
+                title: "List Mind Maps",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
             },
             async ({ limit }) => {
                 const files = await listMindmaps(this.context.output, {
@@ -275,13 +366,20 @@ Privacy: generation is local; no third-party API keys required.`;
     private registerGetMindmap(): void {
         this.server.tool(
             "get_mindmap",
-            "Retrieve a generated mind map file by its absolute path. Use this to read back a file listed by list_mindmaps.",
+            'Retrieve a generated mind map file by absolute path. Read-only — no side effects. Only paths inside the configured output directory are allowed (path traversal denied).\n\nReturns JSON {"filePath","mimeType","size"}. For text/html or image/svg+xml under 200KB, also appends a text content block. PNG/JPG return metadata only (no image block) — re-export via markdown_to_mindmap with format=png|jpg if the agent needs pixels.\n\nOn error: isError:true with {"error":"Failed to retrieve mind map","message"}.\n\nUse list_mindmaps first to obtain a valid filePath. Prefer this over regenerating when the file already exists.',
             {
                 filePath: z
                     .string()
                     .describe(
-                        "Absolute path to the mind map file (HTML or image) to retrieve"
+                        "Absolute path from list_mindmaps (must stay inside the server output directory)."
                     )
+            },
+            {
+                title: "Get Mind Map",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
             },
             async ({ filePath }) => {
                 try {
@@ -334,7 +432,7 @@ Privacy: generation is local; no third-party API keys required.`;
     private registerCleanupMindmaps(): void {
         this.server.tool(
             "cleanup_mindmaps",
-            "Delete generated mind map files from the output directory by age, or delete all of them. Use dryRun to preview without deleting.",
+            'Permanently delete markmap* files from the output directory. DESTRUCTIVE and irreversible when dryRun is false.\n\ndryRun defaults to false — omitting it WILL delete. Always call once with dryRun=true to preview, then again with dryRun=false to commit. Prefer list_mindmaps beforehand.\n\nReturns {"deleted":["<path>",...],"kept":<n>}; dryRun responses also include dryRun:true and do not delete.\n\nUse instead of manual file deletion when pruning old generated mind maps.',
             {
                 maxAgeDays: z
                     .number()
@@ -347,14 +445,21 @@ Privacy: generation is local; no third-party API keys required.`;
                     .boolean()
                     .optional()
                     .describe(
-                        "If true, delete all markmap files in the output directory"
+                        "If true, delete every markmap* file in the output directory (ignores maxAgeDays). Default false."
                     ),
                 dryRun: z
                     .boolean()
                     .optional()
                     .describe(
-                        "If true, preview what would be deleted without actually deleting"
+                        "If true, preview deletions without removing files. Default false (actually deletes). Prefer true on the first call."
                     )
+            },
+            {
+                title: "Cleanup Mind Maps",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: true,
+                openWorldHint: false
             },
             async ({ maxAgeDays, all, dryRun }) => {
                 const result = await cleanupMindmaps(this.context.output, {
@@ -377,7 +482,7 @@ Privacy: generation is local; no third-party API keys required.`;
     private registerPrompts(): void {
         this.server.prompt(
             "mindmap_from_content",
-            "Turn the provided content into a structured Markdown mind map, then call markdown_to_mindmap.",
+            "Organize unstructured content into hierarchical Markdown (headings # and nested lists -), then call markdown_to_mindmap to generate a mind map. Use this when the user provides raw notes, outlines, or ideas that need structuring before visualization.",
             {
                 topic: z
                     .string()

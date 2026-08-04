@@ -15,7 +15,7 @@ Markmap MCP Server 基于 [模型上下文协议 (MCP)](https://modelcontextprot
 - **Markdown 转思维导图**：标题与嵌套列表 → 交互式 HTML 导图
 - **Agent 友好返回**：可返回文件路径、内联 HTML 和/或图片内容（启动时配置）
 - **服务端导出**：通过 Playwright 导出 PNG / JPG / SVG，供聊天内预览
-- **浏览器预览**：可选自动用浏览器打开（启动时配置）
+- **浏览器预览**：可配置的打开行为 — 始终打开、始终不打开、或由 Agent 决策（启动时配置）
 - **页面导出工具栏**：在浏览器中也可一键导出图片或复制 Markdown
 - **离线 HTML**：启动参数 `--offline` 内联资源，无需访问 CDN
 - **文件工作流**：支持 `inputPath`、列出近期文件、清理旧文件
@@ -43,7 +43,7 @@ npm install @jinzcdev/markmap-mcp-server -g
 npx -y @jinzcdev/markmap-mcp-server
 
 # 指定输出目录并自动打开浏览器
-npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory --open
+npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory --open always
 ```
 
 ### Docker
@@ -80,7 +80,7 @@ node build/index.js
       "args": ["-y", "@jinzcdev/markmap-mcp-server"],
       "env": {
         "MARKMAP_DIR": "/path/to/output/directory",
-        "MARKMAP_OPEN": "false",
+        "MARKMAP_OPEN": "never",
         "MARKMAP_RETURN_MODE": "path"
       }
     }
@@ -92,14 +92,24 @@ node build/index.js
 
 以下选项在**服务启动时**决定，**不是**工具入参：
 
-| 偏好       | CLI               | 环境变量              | 可选值                                               | 默认值           |
-| ---------- | ----------------- | --------------------- | ---------------------------------------------------- | ---------------- |
-| 输出目录   | `--output` / `-o` | `MARKMAP_DIR`         | 任意目录路径                                         | `~/.markmap-mcp` |
-| 打开浏览器 | `--open`          | `MARKMAP_OPEN`        | `true` \| `false`（CLI 仅需加 `--open` 表示开启）    | `false`          |
-| 返回模式   | `--return-mode`   | `MARKMAP_RETURN_MODE` | `path` \| `content` \| `both`                        | `path`           |
-| 离线 HTML  | `--offline`       | `MARKMAP_OFFLINE`     | `true` \| `false`（CLI 仅需加 `--offline` 表示开启） | `false`          |
+| 偏好       | CLI               | 环境变量              | 可选值                                                   | 默认值           |
+| ---------- | ----------------- | --------------------- | -------------------------------------------------------- | ---------------- |
+| 输出目录   | `--output` / `-o` | `MARKMAP_DIR`         | 任意目录路径                                             | `~/.markmap-mcp` |
+| 打开浏览器 | `--open [mode]`   | `MARKMAP_OPEN`        | `always` \| `never` \| `agent`（裸 `--open` = `always`） | `never`          |
+| 返回模式   | `--return-mode`   | `MARKMAP_RETURN_MODE` | `path` \| `content` \| `both`                            | `path`           |
+| 离线 HTML  | `--offline`       | `MARKMAP_OFFLINE`     | `true` \| `false`（CLI 仅需加 `--offline` 表示开启）     | `false`          |
 
 命令行参数优先于环境变量；`--output` 优先于 `MARKMAP_DIR`。
+
+**`--open`：** 裸写 `--open` 等同于 `always`；也可显式传 `--open always|never|agent`。非法值会报错退出。未写 flag 时使用 `MARKMAP_OPEN`（默认 `never`）。
+
+**返回模式：**
+
+| 模式      | 含义                                                     |
+| --------- | -------------------------------------------------------- |
+| `path`    | 仅路径 JSON（`htmlFilePath` + `filePath`）               |
+| `content` | 仅内联内容（原始 HTML 文本，或 base64 图片块）— 不含路径 |
+| `both`    | 路径 JSON + 内联内容                                     |
 
 生成的 HTML 固定包含 markmap 工具栏、英文导出按钮文案，并默认展开全部节点。
 
@@ -115,14 +125,15 @@ node build/index.js
 
 将 Markdown 转为交互式思维导图（可选导出图片）。
 
-| 参数        | 类型                              | 默认值 | 说明                                         |
-| ----------- | --------------------------------- | ------ | -------------------------------------------- |
-| `markdown`  | string                            | —      | Markdown 内容（与 `inputPath` 至少提供一个） |
-| `inputPath` | string                            | —      | 本地 Markdown 文件绝对路径                   |
-| `format`    | `html` \| `png` \| `svg` \| `jpg` | `html` | 输出格式；图片格式需 Playwright              |
-| `filename`  | string                            | 自动   | 输出文件名（同名会覆盖）                     |
+| 参数        | 类型                              | 默认值  | 说明                                                                                                                     |
+| ----------- | --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `markdown`  | string                            | —       | Markdown 内容（与 `inputPath` 至少提供一个；两者都给时以 markdown 为准）                                                 |
+| `inputPath` | string                            | —       | 本地 Markdown 文件绝对路径                                                                                               |
+| `format`    | `html` \| `png` \| `svg` \| `jpg` | `html`  | 输出格式；图片格式需 Playwright                                                                                          |
+| `filename`  | string                            | 自动    | 输出文件名（会清洗；必要时加 `markmap-` 前缀；同名覆盖）                                                                 |
+| `open`      | boolean                           | `false` | 是否在浏览器中打开结果。**仅当服务器 open 模式为 `agent` 时出现在工具入参中**（`--open agent` / `MARKMAP_OPEN=agent`）。 |
 
-**返回值（HTML，服务端 `returnMode=path`）：**
+**返回值（`returnMode=path`）：**
 
 ```json
 {
@@ -131,21 +142,33 @@ node build/index.js
 }
 ```
 
-**返回值（图片，服务端 `returnMode=both`）：** 含 `{htmlFilePath, filePath}` 的 JSON 文本，以及 MCP `image`（base64）内容块。
+图片格式下 `filePath` 为图片路径，`htmlFilePath` 仍为 HTML 源文件。
+
+**返回值（`returnMode=content`）：** 原始 HTML 文本块，或 PNG/JPG/SVG 的 MCP `image`（base64）内容块 — 不含路径 JSON。HTML ≥200KB 时回退为路径 JSON。
+
+**返回值（`returnMode=both`）：** 路径 JSON + 上述内联内容。
 
 > **说明：** 页面内的缩放/折叠与「Export PNG/JPG/SVG」按钮属于 **HTML 预览体验**。Agent 若要直接拿到图片，请使用工具参数 `format: png|jpg|svg`。
 
 ### `list_mindmaps`
 
-列出输出目录中近期生成的导图文件。返回 `{outputDir, files: [{name, filePath, size, mtimeMs, mtime}]}`。
+列出输出目录中近期生成的导图文件（最新优先）。仅包含文件名以 `markmap` 开头的文件。
+
+| 参数    | 类型   | 默认值 | 说明                  |
+| ------- | ------ | ------ | --------------------- |
+| `limit` | number | `20`   | 最多返回条数（1–200） |
+
+返回 `{outputDir, files: [{name, filePath, size, mtimeMs, mtime}]}`。
 
 ### `get_mindmap`
 
-按绝对路径获取已生成的导图文件。
+按绝对路径获取已生成的导图文件。路径必须位于配置的输出目录内（禁止路径穿越）。
 
 | 参数       | 类型   | 默认值 | 说明                              |
 | ---------- | ------ | ------ | --------------------------------- |
 | `filePath` | string | —      | 导图文件（HTML 或图片）的绝对路径 |
+
+返回 JSON `{filePath, mimeType, size}`。HTML/SVG 且小于 200KB 时另附文本内容块；PNG/JPG 仅返回元数据（无 image 块）— 需要像素时请用 `markdown_to_mindmap` 的 `format=png|jpg` 重新导出。
 
 ### `cleanup_mindmaps`
 
@@ -160,6 +183,10 @@ node build/index.js
 ### Prompt：`mindmap_from_content`
 
 辅助 Prompt：先将内容整理为层级 Markdown，再调用 `markdown_to_mindmap`。
+
+| 参数    | 类型   | 默认值 | 说明                     |
+| ------- | ------ | ------ | ------------------------ |
+| `topic` | string | —      | 要整理成导图的主题或原文 |
 
 ## 相关项目
 

@@ -15,7 +15,7 @@ Markmap MCP Server is based on the [Model Context Protocol (MCP)](https://modelc
 - **Markdown → Mind Map**: Convert Markdown (headings + nested lists) to interactive HTML mind maps
 - **Agent-friendly returns**: Return a file path, inline HTML, and/or image content (configured at startup)
 - **Server-side export**: Export PNG / JPG / SVG via Playwright for chat/inline preview
-- **Browser preview**: Optional auto-open in the browser (startup setting)
+- **Browser preview**: Configurable open behavior — always, never, or agent-decided (startup setting)
 - **Browser export toolbar**: When viewing HTML, also export PNG/JPG/SVG or copy Markdown in the page UI
 - **Offline HTML**: Startup `--offline` inlines assets so the page works without CDN access
 - **File workflows**: Read from `inputPath`, list recent outputs, clean up old files
@@ -43,7 +43,7 @@ npm install @jinzcdev/markmap-mcp-server -g
 npx -y @jinzcdev/markmap-mcp-server
 
 # Specify output directory and auto-open in browser
-npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory --open
+npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory --open always
 ```
 
 ### Docker
@@ -80,7 +80,7 @@ Add the following configuration to your MCP client (Cursor / Claude Desktop / et
       "args": ["-y", "@jinzcdev/markmap-mcp-server"],
       "env": {
         "MARKMAP_DIR": "/path/to/output/directory",
-        "MARKMAP_OPEN": "false",
+        "MARKMAP_OPEN": "never",
         "MARKMAP_RETURN_MODE": "path"
       }
     }
@@ -92,14 +92,24 @@ Add the following configuration to your MCP client (Cursor / Claude Desktop / et
 
 These are decided when the server starts — **not** tool arguments:
 
-| Preference       | CLI               | Env                   | Values                                              | Default          |
-| ---------------- | ----------------- | --------------------- | --------------------------------------------------- | ---------------- |
-| Output directory | `--output` / `-o` | `MARKMAP_DIR`         | any directory path                                  | `~/.markmap-mcp` |
-| Open in browser  | `--open`          | `MARKMAP_OPEN`        | `true` \| `false` (CLI: pass `--open` to enable)    | `false`          |
-| Return mode      | `--return-mode`   | `MARKMAP_RETURN_MODE` | `path` \| `content` \| `both`                       | `path`           |
-| Offline HTML     | `--offline`       | `MARKMAP_OFFLINE`     | `true` \| `false` (CLI: pass `--offline` to enable) | `false`          |
+| Preference       | CLI               | Env                   | Values                                                    | Default          |
+| ---------------- | ----------------- | --------------------- | --------------------------------------------------------- | ---------------- |
+| Output directory | `--output` / `-o` | `MARKMAP_DIR`         | any directory path                                        | `~/.markmap-mcp` |
+| Open in browser  | `--open [mode]`   | `MARKMAP_OPEN`        | `always` \| `never` \| `agent` (bare `--open` = `always`) | `never`          |
+| Return mode      | `--return-mode`   | `MARKMAP_RETURN_MODE` | `path` \| `content` \| `both`                             | `path`           |
+| Offline HTML     | `--offline`       | `MARKMAP_OFFLINE`     | `true` \| `false` (CLI: pass `--offline` to enable)       | `false`          |
 
 CLI flags override environment variables. `--output` overrides `MARKMAP_DIR`.
+
+**`--open`:** bare `--open` means `always`. You may also pass `--open always|never|agent`. An invalid value exits with an error. Without the flag, `MARKMAP_OPEN` is used (default `never`).
+
+**Return mode:**
+
+| Mode      | Meaning                                                                 |
+| --------- | ----------------------------------------------------------------------- |
+| `path`    | Paths JSON only (`htmlFilePath` + `filePath`)                           |
+| `content` | Inline content only (raw HTML text, or a base64 image block) — no paths |
+| `both`    | Paths JSON plus inline content                                          |
 
 Generated HTML always includes the markmap toolbar, English export labels, and fully expanded nodes.
 
@@ -115,14 +125,15 @@ Generated HTML always includes the markmap toolbar, English export labels, and f
 
 Convert Markdown into an interactive mind map (and optionally an image).
 
-| Parameter   | Type                              | Default | Description                                           |
-| ----------- | --------------------------------- | ------- | ----------------------------------------------------- |
-| `markdown`  | string                            | —       | Markdown content (required unless `inputPath` is set) |
-| `inputPath` | string                            | —       | Absolute path to a local `.md` file                   |
-| `format`    | `html` \| `png` \| `svg` \| `jpg` | `html`  | Output format. Image formats need Playwright          |
-| `filename`  | string                            | auto    | Output base name (reusing overwrites)                 |
+| Parameter   | Type                              | Default | Description                                                                                                                       |
+| ----------- | --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `markdown`  | string                            | —       | Markdown content (required unless `inputPath` is set). Wins when both are provided.                                               |
+| `inputPath` | string                            | —       | Absolute path to a local `.md` file                                                                                               |
+| `format`    | `html` \| `png` \| `svg` \| `jpg` | `html`  | Output format. Image formats need Playwright                                                                                      |
+| `filename`  | string                            | auto    | Output base name (sanitized; prefixed with `markmap-` if needed; reusing overwrites)                                              |
+| `open`      | boolean                           | `false` | Whether to open the result in browser. **Only exposed when server open mode is `agent`** (`--open agent` / `MARKMAP_OPEN=agent`). |
 
-**Return (HTML, server `returnMode=path`):**
+**Return (`returnMode=path`):**
 
 ```json
 {
@@ -131,21 +142,33 @@ Convert Markdown into an interactive mind map (and optionally an image).
 }
 ```
 
-**Return (image, server `returnMode=both`):** Returns `{htmlFilePath, filePath}` JSON text plus an MCP `image` content block (base64).
+For image formats, `filePath` is the image path and `htmlFilePath` is still the HTML source.
+
+**Return (`returnMode=content`):** Raw HTML text block, or an MCP `image` content block (base64) for png/jpg/svg — no paths JSON. Oversized HTML (≥200KB) falls back to paths JSON.
+
+**Return (`returnMode=both`):** Paths JSON plus the inline content above.
 
 > **Note:** Interactive zoom/collapse and the in-page “Export PNG/JPG/SVG” buttons are part of the **HTML viewer**. Server-side `format: png|jpg|svg` is what Agents can consume directly without a manual browser click.
 
 ### `list_mindmaps`
 
-List recent generated files in the output directory. Returns `{outputDir, files: [{name, filePath, size, mtimeMs, mtime}]}`.
+List recent generated files in the output directory (newest first). Only files whose names start with `markmap` are included.
+
+| Parameter | Type   | Default | Description                 |
+| --------- | ------ | ------- | --------------------------- |
+| `limit`   | number | `20`    | Max files to return (1–200) |
+
+Returns `{outputDir, files: [{name, filePath, size, mtimeMs, mtime}]}`.
 
 ### `get_mindmap`
 
-Retrieve a generated mind map file by its absolute path.
+Retrieve a generated mind map file by its absolute path. Path must stay inside the configured output directory (path traversal denied).
 
 | Parameter  | Type   | Default | Description                                        |
 | ---------- | ------ | ------- | -------------------------------------------------- |
 | `filePath` | string | —       | Absolute path to the mind map file (HTML or image) |
+
+Returns JSON `{filePath, mimeType, size}`. For HTML/SVG under 200KB, also appends a text content block. PNG/JPG return metadata only (no image block) — re-export via `markdown_to_mindmap` with `format=png\|jpg` if pixels are needed.
 
 ### `cleanup_mindmaps`
 
@@ -160,6 +183,10 @@ Delete old (or all) generated mind map files.
 ### Prompt: `mindmap_from_content`
 
 Helper prompt that asks the model to structure notes as Markdown, then call `markdown_to_mindmap`.
+
+| Parameter | Type   | Default | Description                             |
+| --------- | ------ | ------- | --------------------------------------- |
+| `topic`   | string | —       | Topic or raw notes to organize as a map |
 
 ## Related Projects
 

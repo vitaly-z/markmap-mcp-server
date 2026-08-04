@@ -284,7 +284,7 @@ export async function createMarkmap(
 
     const renderToolbar = () => {
         // Serialized into HTML by fillTemplate; runs in the browser.
-         
+
         const { markmap, mm } = window as any;
         const tb = new markmap.Toolbar();
         tb.attach(mm);
