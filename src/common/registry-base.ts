@@ -13,9 +13,6 @@ export abstract class RegistryBase {
         protected context: MarkmapMcpContext
     ) {}
 
-    /**
-     * Registers all applicable components based on site version and authentication status.
-     * This method follows a specific registration sequence to ensure proper component organization.
-     */
+    /** Registers MCP tools / prompts for this registry. */
     public abstract register(): void;
 }

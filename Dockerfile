@@ -30,6 +30,11 @@ RUN npm install --ignore-scripts --omit=dev
 
 # Define environment variable for markmap data directory
 ENV MARKMAP_DIR=/data/markmap
+RUN mkdir -p /data/markmap
+
+# Optional: install Chromium for server-side PNG/JPG/SVG export.
+# Uncomment the following lines if you need image export inside the container:
+# RUN npx playwright install --with-deps chromium
 
 # Define the command to run when the container starts
 ENTRYPOINT ["node", "build/index.js"]

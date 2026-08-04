@@ -1,9 +1,12 @@
 {
     "name": "@jinzcdev/markmap-mcp-server",
-    "description": "MCP server for converting Markdown to interactive mind maps with export support (PNG/JPG/SVG)",
-    "version": "0.1.1",
+    "description": "MCP server for converting Markdown to interactive mind maps with Agent-friendly HTML/PNG/JPG/SVG export",
+    "version": "0.2.0",
     "author": "jinzcdev",
     "main": "./build/index.js",
+    "engines": {
+        "node": ">=20"
+    },
     "keywords": [
         "markmap",
         "mindmap",
@@ -43,11 +46,15 @@
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.8.0",
-        "minimist": "^1.2.8",
+        "html-to-image": "^1.11.13",
         "markmap-cli": "^0.18.11",
+        "markmap-common": "0.18.9",
+        "markmap-lib": "0.18.11",
+        "markmap-render": "0.18.10",
+        "minimist": "^1.2.8",
+        "open": "^10.1.0",
         "pino": "^9.6.0",
-        "zod": "^3.24.2",
-        "open": "^10.1.0"
+        "zod": "^4.4.3"
     },
     "devDependencies": {
         "@eslint/js": "^9.24.0",
@@ -61,15 +68,17 @@
         "husky": "^9.1.7",
         "lint-staged": "^15.5.1",
         "pino-pretty": "^13.0.0",
+        "playwright": "^1.61.1",
         "prettier": "^3.5.3",
         "prettier-plugin-organize-imports": "^4.1.0",
         "tsc-watch": "6.2.1",
         "typescript": "^5.8.3",
         "typescript-eslint": "^8.29.1",
-        "vitest": "^3.1.3",
-        "vite": "^6.3.5"
+        "vite": "^6.3.5",
+        "vitest": "^3.2.6"
     },
     "optionalDependencies": {
-        "@rollup/rollup-linux-x64-gnu": "^4.40.1"
+        "@rollup/rollup-linux-x64-gnu": "^4.62.2",
+        "playwright": "^1.61.1"
     }
 }
