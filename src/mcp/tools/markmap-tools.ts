@@ -18,7 +18,7 @@ import { ToolRegistry } from "./tool-registry.js";
 
 export type { MarkmapMcpContext, ReturnMode } from "./context.js";
 
-function sanitizeFilename(name: string): string {
+export function sanitizeFilename(name: string): string {
     const base = basename(name).replace(/\.[^.]+$/, "");
     const cleaned = base
         .replace(/[^\w.\-\u4e00-\u9fff]+/g, "_")
@@ -27,7 +27,7 @@ function sanitizeFilename(name: string): string {
     return (cleaned || "markmap").slice(0, 80);
 }
 
-function ensureExtension(filename: string, ext: string): string {
+export function ensureExtension(filename: string, ext: string): string {
     const normalized = ext.startsWith(".") ? ext : `.${ext}`;
     if (extname(filename).toLowerCase() === normalized) {
         return filename;

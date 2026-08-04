@@ -16,7 +16,7 @@ import logger from "./utils/logger.js";
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string };
 
-function parseBoolean(
+export function parseBoolean(
     value: string | boolean | undefined,
     defaultValue: boolean
 ): boolean {
@@ -36,7 +36,7 @@ function parseBoolean(
     return defaultValue;
 }
 
-function parseReturnMode(value: string | undefined): ReturnMode {
+export function parseReturnMode(value: string | undefined): ReturnMode {
     if (value === "content" || value === "both" || value === "path") {
         return value;
     }
