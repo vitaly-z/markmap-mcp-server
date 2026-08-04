@@ -1,101 +1,199 @@
 import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
+import { createRequire } from "module";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { config as markmapCliConfig } from "markmap-cli";
+import {
+    buildCSSItem,
+    buildJSItem,
+    mergeAssets,
+    type CSSItem,
+    type JSItem
+} from "markmap-common";
 import { Transformer, builtInPlugins } from "markmap-lib";
-import { fillTemplate } from "markmap-render";
-
+import { baseJsPaths, fillTemplate } from "markmap-render";
 import open from "open";
 
-interface CreateMarkmapOptions {
-    /**
-     * Markdown content to be converted into a mind map
-     */
+import { escapeTextareaContent } from "./escape.js";
+import { getToolbarLabels } from "./i18n.js";
+
+const require = createRequire(import.meta.url);
+
+const TOOLBAR_VERSION = "0.18.10";
+const TOOLBAR_CSS = `markmap-toolbar@${TOOLBAR_VERSION}/dist/style.css`;
+const TOOLBAR_JS = `markmap-toolbar@${TOOLBAR_VERSION}/dist/index.js`;
+const ASSETS_PREFIX = "/assets/";
+
+export interface CreateMarkmapOptions {
+    /** Markdown content to convert */
     content: string;
-    /**
-     * Output file path, if not provided, a temporary file will be created
-     */
+    /** Absolute output HTML path */
     output?: string;
-    /**
-     * Whether to open the output file after generation
-     * @default false
-     */
+    /** Open the HTML in the default browser */
     openIt?: boolean;
+    /** Inline assets so the HTML works offline */
+    offline?: boolean;
 }
 
-interface CreateMarkmapResult {
-    /**
-     * Path to the generated HTML file
-     */
+export interface CreateMarkmapResult {
     filePath: string;
-    /**
-     * Content of the generated HTML file
-     */
     content: string;
 }
 
-/**
- * Creates a mind map from Markdown content with additional features.
- *
- * @param options Options for creating the mind map
- * @returns Promise containing the generated mind map file path and content
- */
-export async function createMarkmap(
-    options: CreateMarkmapOptions
-): Promise<CreateMarkmapResult> {
-    const { content, output, openIt = false } = options;
+function localProvider(path: string): string {
+    return `${ASSETS_PREFIX}${path}`;
+}
 
-    // If no output path is provided, generate a default file path in the temp directory
-    const filePath = output || join(tmpdir(), `markmap-${randomUUID()}.html`);
-
-    const transformer = new Transformer([...builtInPlugins]);
-    const { root, features } = transformer.transform(content);
-    const assets = transformer.getUsedAssets(features);
-    const html = fillTemplate(root, assets, undefined);
-
-    // Add markmap-toolbar related code
-    const toolbarCode = `
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.10/dist/style.css"
-    />
-
-    <script src="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.10/dist/index.js"></script>
-    <script>
-      ((r) => {
-          setTimeout(r);
-      })(() => {
-          const { markmap, mm } = window;
-          const toolbar = new markmap.Toolbar();
-          toolbar.attach(mm);
-          const el = toolbar.render();
-          el.setAttribute(
-              "style",
-              "position:absolute;bottom:20px;right:20px"
-          );
-          document.body.append(el);
-          
-          // Ensure the mind map fits the current view
-          setTimeout(() => {
-            if (mm && typeof mm.fit === 'function') {
-              mm.fit();
+async function loadAssetText(path: string): Promise<string> {
+    if (path.startsWith(ASSETS_PREFIX)) {
+        const relpath = path.slice(ASSETS_PREFIX.length);
+        const localPath = join(markmapCliConfig.assetsDir, relpath);
+        try {
+            return await fs.readFile(localPath, "utf8");
+        } catch {
+            // Fall back to jsDelivr when the CLI asset pack is missing a version
+            const cdnUrl = `https://cdn.jsdelivr.net/npm/${relpath}`;
+            const res = await fetch(cdnUrl);
+            if (!res.ok) {
+                throw new Error(
+                    `Failed to load offline asset: ${relpath} (${res.status})`
+                );
             }
-          }, 1200);
-      });
+            return res.text();
+        }
+    }
+    if (path.startsWith("http://") || path.startsWith("https://")) {
+        const res = await fetch(path);
+        if (!res.ok) {
+            throw new Error(`Failed to fetch asset: ${path} (${res.status})`);
+        }
+        return res.text();
+    }
+    return fs.readFile(path, "utf8");
+}
+
+async function inlineAssets(assets: {
+    scripts?: JSItem[];
+    styles?: CSSItem[];
+}): Promise<{ scripts?: JSItem[]; styles?: CSSItem[] }> {
+    const [scripts, styles] = await Promise.all([
+        Promise.all(
+            (assets.scripts || []).map(async (item) =>
+                item.type === "script" &&
+                item.data &&
+                "src" in item.data &&
+                item.data.src
+                    ? {
+                          type: "script" as const,
+                          data: {
+                              textContent: await loadAssetText(item.data.src)
+                          }
+                      }
+                    : item
+            )
+        ),
+        Promise.all(
+            (assets.styles || []).map(async (item) =>
+                item.type === "stylesheet" &&
+                item.data &&
+                "href" in item.data &&
+                item.data.href
+                    ? {
+                          type: "style" as const,
+                          data: await loadAssetText(item.data.href)
+                      }
+                    : item
+            )
+        )
+    ]);
+    return { scripts, styles };
+}
+
+function buildExportToolbarScript(
+    labels: ReturnType<typeof getToolbarLabels>
+): string {
+    return `
+    <script>
+      (function() {
+        const labels = ${JSON.stringify(labels)};
+        const exportToolbar = document.createElement('div');
+        exportToolbar.className = 'mm-export-toolbar';
+        document.body.appendChild(exportToolbar);
+
+        function addBtn(className, text, title, onClick) {
+          const btn = document.createElement('button');
+          btn.className = 'mm-export-btn ' + className;
+          btn.textContent = text;
+          btn.title = title;
+          btn.onclick = onClick;
+          exportToolbar.appendChild(btn);
+          return btn;
+        }
+
+        addBtn('png-export', labels.exportPng, labels.pngTitle, () => exportToImage('png'));
+        addBtn('jpg-export', labels.exportJpg, labels.jpgTitle, () => exportToImage('jpeg'));
+        addBtn('svg-export', labels.exportSvg, labels.svgTitle, () => exportToImage('svg'));
+        const copyBtn = addBtn('mm-copy-btn copy-markdown', labels.copyMarkdown, labels.copyTitle, copyOriginalMarkdown);
+
+        function copyOriginalMarkdown() {
+          try {
+            const markdownElement = document.getElementById('original-markdown');
+            if (!markdownElement) throw new Error('Original Markdown content not found');
+            navigator.clipboard.writeText(markdownElement.value)
+              .then(() => {
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = labels.copied;
+                copyBtn.style.backgroundColor = '#2ecc71';
+                setTimeout(() => {
+                  copyBtn.textContent = originalText;
+                  copyBtn.style.backgroundColor = '';
+                }, 2000);
+              })
+              .catch(() => alert(labels.copyFailed));
+          } catch (e) {
+            alert(labels.copyError + (e && e.message ? e.message : e));
+          }
+        }
+
+        function exportToImage(format) {
+          try {
+            const node = window.mm.svg._groups[0][0];
+            if (!node) throw new Error('Cannot find mind map SVG element');
+            window.mm.fit().then(() => {
+              const options = {
+                backgroundColor: '#ffffff',
+                quality: 1.0,
+                width: node.getBoundingClientRect().width,
+                height: node.getBoundingClientRect().height
+              };
+              const exportPromise = format === 'svg'
+                ? htmlToImage.toSvg(node, options)
+                : format === 'jpeg'
+                  ? htmlToImage.toJpeg(node, options)
+                  : htmlToImage.toPng(node, options);
+              exportPromise.then((dataUrl) => {
+                const link = document.createElement('a');
+                const timestamp = new Date().toISOString().slice(0, 10);
+                const ext = format === 'jpeg' ? 'jpg' : format;
+                link.download = 'markmap-' + timestamp + '.' + ext;
+                link.href = dataUrl;
+                link.click();
+              }).catch((err) => console.error('Export failed:', err));
+            });
+          } catch (e) {
+            alert(labels.exportFailed + (e && e.message ? e.message : e));
+          }
+        }
+      })();
     </script>
   `;
+}
 
-    // Add scripts and styles for additional features
-    const additionalCode = `
-    <!-- Add html-to-image library -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"></script>
-
-    <!-- Hidden element to store original Markdown content -->
-    <textarea id="original-markdown" style="display:none;">${content}</textarea>
-
+function buildExportToolbarStyles(): string {
+    return `
     <style>
-      /* Export toolbar styles */
       .mm-export-toolbar {
         position: fixed;
         bottom: 20px;
@@ -119,21 +217,14 @@ export async function createMarkmap(
         font-size: 14px;
         transition: background-color 0.3s;
       }
-      .mm-export-btn:hover {
-        background-color: #2980b9;
-      }
-      .mm-copy-btn {
-        background-color: #27ae60;
-      }
-      .mm-copy-btn:hover {
-        background-color: #219653;
-      }
+      .mm-export-btn:hover { background-color: #2980b9; }
+      .mm-copy-btn { background-color: #27ae60; }
+      .mm-copy-btn:hover { background-color: #219653; }
       @media print {
-        .mm-export-toolbar { display: none !important; }
-        .mm-toolbar { display: none !important; }
-        svg.markmap, svg#mindmap, #mindmap svg { 
+        .mm-export-toolbar, .mm-toolbar { display: none !important; }
+        svg.markmap, svg#mindmap, #mindmap svg {
           display: block !important;
-          visibility: visible !important; 
+          visibility: visible !important;
           opacity: 1 !important;
           height: 100vh !important;
           width: 100% !important;
@@ -151,136 +242,129 @@ export async function createMarkmap(
         }
       }
     </style>
-
-    <script>
-      (function() {
-        // Create bottom export toolbar
-        const exportToolbar = document.createElement('div');
-        exportToolbar.className = 'mm-export-toolbar';
-        document.body.appendChild(exportToolbar);
-        
-        // Export as PNG image
-        const pngBtn = document.createElement('button');
-        pngBtn.className = 'mm-export-btn png-export';
-        pngBtn.innerHTML = 'Export PNG';
-        pngBtn.title = 'Export as PNG image';
-        pngBtn.onclick = () => {
-          exportToImage('png');
-        };
-        exportToolbar.appendChild(pngBtn);
-
-        // Export as JPG image
-        const jpgBtn = document.createElement('button');
-        jpgBtn.className = 'mm-export-btn jpg-export';
-        jpgBtn.innerHTML = 'Export JPG';
-        jpgBtn.title = 'Export as JPG image';
-        jpgBtn.onclick = () => {
-          exportToImage('jpeg');
-        };
-        exportToolbar.appendChild(jpgBtn);
-        
-        // Export as SVG image
-        const svgBtn = document.createElement('button');
-        svgBtn.className = 'mm-export-btn svg-export';
-        svgBtn.innerHTML = 'Export SVG';
-        svgBtn.title = 'Export as SVG image';
-        svgBtn.onclick = () => {
-          exportToImage('svg');
-        };
-        exportToolbar.appendChild(svgBtn);
-
-        // Copy original Markdown button
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'mm-export-btn mm-copy-btn copy-markdown';
-        copyBtn.innerHTML = 'Copy Markdown';
-        copyBtn.title = 'Copy original Markdown content';
-        copyBtn.onclick = copyOriginalMarkdown;
-        exportToolbar.appendChild(copyBtn);
-
-        // Function to copy original Markdown content
-        function copyOriginalMarkdown() {
-          try {
-            const markdownElement = document.getElementById('original-markdown');
-            if (!markdownElement) {
-              throw new Error('Original Markdown content not found');
-            }
-            
-            const markdownContent = markdownElement.value;
-            
-            // Copy to clipboard
-            navigator.clipboard.writeText(markdownContent)
-              .then(() => {
-                const originalText = copyBtn.innerHTML;
-                copyBtn.innerHTML = '✓ Copied';
-                copyBtn.style.backgroundColor = '#2ecc71';
-                
-                setTimeout(() => {
-                  copyBtn.innerHTML = originalText;
-                  copyBtn.style.backgroundColor = '';
-                }, 2000);
-              })
-              .catch(err => {
-                console.error('Copy failed:', err);
-                alert('Failed to copy to clipboard, please check browser permissions');
-              });
-          } catch (e) {
-            console.error('Error copying Markdown:', e);
-            alert('Unable to copy Markdown: ' + e.message);
-          }
-        }
-
-        // Function to export image
-        function exportToImage(format) {
-          try {
-            const node = window.mm.svg._groups[0][0];
-            
-            if (!node) {
-              throw new Error('Cannot find mind map SVG element');
-            }
-
-            window.mm.fit().then(() => {
-              const options = {
-                backgroundColor: "#ffffff", 
-                quality: 1.0,
-                width: node.getBoundingClientRect().width,
-                height: node.getBoundingClientRect().height
-              };
-              
-              const exportPromise = format === 'svg' 
-                ? htmlToImage.toSvg(node, options)
-                : format === 'jpeg' 
-                  ? htmlToImage.toJpeg(node, options) 
-                  : htmlToImage.toPng(node, options);
-              
-              exportPromise
-                .then((dataUrl) => {
-                  const link = document.createElement('a');
-                  const timestamp = new Date().toISOString().slice(0, 10);
-                  link.download = \`markmap-\${timestamp}.\${format === 'jpeg' ? 'jpg' : format === 'svg' ? 'svg' : 'png'}\`;
-                  link.href = dataUrl;
-                  link.click();
-                })
-                .catch((err) => console.error("Export failed:", err));
-            })
-            .catch((err) => {
-                throw err;
-            });
-              
-          } catch (e) {
-            console.error('Error exporting image:', e);
-            alert('Image export failed: ' + e.message);
-          }
-        }
-      })();
-    </script>
   `;
+}
 
-    const updatedContent = html.replace(
-        "</body>",
-        `${toolbarCode}\n${additionalCode}\n</body>`
+async function resolveHtmlToImageTag(offline: boolean): Promise<string> {
+    if (!offline) {
+        return `<script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"></script>`;
+    }
+    try {
+        const pkgPath = require.resolve("html-to-image/dist/html-to-image.js");
+        const source = await fs.readFile(pkgPath, "utf8");
+        return `<script>${source}</script>`;
+    } catch {
+        return `<script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js"></script>`;
+    }
+}
+
+/**
+ * Creates an interactive mind map HTML file from Markdown.
+ */
+export async function createMarkmap(
+    options: CreateMarkmapOptions
+): Promise<CreateMarkmapResult> {
+    const { content, output, openIt = false, offline = false } = options;
+
+    const filePath = output || join(tmpdir(), `markmap-${randomUUID()}.html`);
+    const transformer = new Transformer([...builtInPlugins]);
+
+    if (offline) {
+        transformer.urlBuilder.setProvider("local", localProvider);
+        transformer.urlBuilder.provider = "local";
+    } else {
+        try {
+            await transformer.urlBuilder.findFastestProvider();
+        } catch {
+            // keep default CDN provider
+        }
+    }
+
+    const { root, features, frontmatter } = transformer.transform(content);
+
+    const renderToolbar = () => {
+        // Serialized into HTML by fillTemplate; runs in the browser.
+         
+        const { markmap, mm } = window as any;
+        const tb = new markmap.Toolbar();
+        tb.attach(mm);
+        const el = tb.render();
+        el.setAttribute("style", "position:absolute;bottom:20px;right:20px");
+        document.body.append(el);
+        setTimeout(() => {
+            if (mm && typeof mm.fit === "function") {
+                mm.fit();
+            }
+        }, 1200);
+    };
+
+    const toolbarAssets = {
+        styles: [buildCSSItem(TOOLBAR_CSS)],
+        scripts: [
+            buildJSItem(TOOLBAR_JS),
+            {
+                type: "iife" as const,
+                data: {
+                    fn: (...args: unknown[]) => {
+                        const r = args[0] as () => void;
+                        setTimeout(r);
+                    },
+                    getParams: () => [renderToolbar] as unknown[]
+                }
+            }
+        ]
+    };
+
+    const otherAssets = mergeAssets(
+        { scripts: baseJsPaths.map((p) => buildJSItem(p)) },
+        toolbarAssets
     );
 
-    await fs.writeFile(filePath, updatedContent);
+    let assets = mergeAssets(
+        {
+            scripts: otherAssets.scripts?.map((item) =>
+                transformer.resolveJS(item)
+            ),
+            styles: otherAssets.styles?.map((item) =>
+                transformer.resolveCSS(item)
+            )
+        },
+        transformer.getUsedAssets(features)
+    );
+
+    if (offline) {
+        assets = await inlineAssets(assets);
+    }
+
+    const frontmatterOptions =
+        (frontmatter as { markmap?: Record<string, unknown> } | undefined)
+            ?.markmap ?? {};
+
+    const jsonOptions: Record<string, unknown> = {
+        ...frontmatterOptions,
+        initialExpandLevel: -1
+    };
+
+    const html = fillTemplate(root, assets, {
+        baseJs: [],
+        jsonOptions,
+        urlBuilder: transformer.urlBuilder
+    });
+
+    const labels = getToolbarLabels();
+    const htmlToImageTag = await resolveHtmlToImageTag(offline);
+    const additionalCode = `
+    ${htmlToImageTag}
+    <textarea id="original-markdown" style="display:none;">${escapeTextareaContent(content)}</textarea>
+    ${buildExportToolbarStyles()}
+    ${buildExportToolbarScript(labels)}
+  `;
+
+    const updatedContent = html.includes("</body>")
+        ? html.replace("</body>", `${additionalCode}\n</body>`)
+        : `${html}\n${additionalCode}`;
+
+    await fs.writeFile(filePath, updatedContent, "utf8");
 
     if (openIt) {
         await open(filePath);

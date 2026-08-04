@@ -8,23 +8,32 @@
 [![English Doc](https://img.shields.io/badge/English-View-blue)](README.md)
 [![Stars](https://img.shields.io/github/stars/jinzcdev/markmap-mcp-server)](https://github.com/jinzcdev/markmap-mcp-server)
 
-Markmap MCP Server 基于 [模型上下文协议 (MCP)](https://modelcontextprotocol.io/introduction)，可将 Markdown 文本一键转换为交互式思维导图，底层采用开源项目 [markmap](https://github.com/markmap/markmap)。生成的思维导图支持丰富的交互操作，并可导出为多种图片格式。
+Markmap MCP Server 基于 [模型上下文协议 (MCP)](https://modelcontextprotocol.io/introduction)，使用开源项目 [markmap](https://github.com/markmap/markmap) 将 Markdown 转为交互式思维导图，并支持在**服务端**导出 PNG / JPG / SVG，便于 Agent 在对话中直接消费。转换过程在**本地完成**，无需第三方 API Key。
 
 ## 特性
 
-- 🌠 **Markdown 转思维导图**：将 Markdown 文本转换为交互式思维导图
-- 🖼️ **多格式导出**：支持导出为 PNG、JPG 和 SVG 格式的图片
-- 🔄 **交互式操作**：支持缩放、展开/折叠节点等交互功能
-- 📋 **Markdown 复制**：一键复制原始 Markdown 内容
-- 🌐 **自动浏览器预览**：可选择自动在浏览器中打开生成的思维导图
+- **Markdown 转思维导图**：标题与嵌套列表 → 交互式 HTML 导图
+- **Agent 友好返回**：可返回文件路径、内联 HTML 和/或图片内容（启动时配置）
+- **服务端导出**：通过 Playwright 导出 PNG / JPG / SVG，供聊天内预览
+- **浏览器预览**：可选自动用浏览器打开（启动时配置）
+- **页面导出工具栏**：在浏览器中也可一键导出图片或复制 Markdown
+- **离线 HTML**：启动参数 `--offline` 内联资源，无需访问 CDN
+- **文件工作流**：支持 `inputPath`、列出近期文件、清理旧文件
+- **隐私优先**：纯本地生成，无云端导图 API
 
 ## 前提条件
 
-1. Node.js (v20 或以上)
+1. Node.js **v20 或以上**
+2. 使用**服务端图片导出**（`format: png|jpg|svg`）时需安装 Playwright 与 Chromium：
+
+```bash
+npm install playwright
+npx playwright install chromium
+```
+
+（`playwright` 为本包的可选依赖。）
 
 ## 安装
-
-### 手动安装
 
 ```bash
 # 从 npm 安装
@@ -33,29 +42,34 @@ npm install @jinzcdev/markmap-mcp-server -g
 # 基本运行
 npx -y @jinzcdev/markmap-mcp-server
 
-# 指定输出目录
-npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory
+# 指定输出目录并自动打开浏览器
+npx -y @jinzcdev/markmap-mcp-server --output /path/to/output/directory --open
 ```
 
-或者，您可以克隆仓库并在本地运行：
+### Docker
 
 ```bash
-# 克隆仓库
+docker build -t markmap-mcp-server .
+docker run --rm -i \
+  -v /path/to/output:/data/markmap \
+  -e MARKMAP_DIR=/data/markmap \
+  markmap-mcp-server
+```
+
+或克隆仓库本地运行：
+
+```bash
 git clone https://github.com/jinzcdev/markmap-mcp-server.git
-
-# 导航到项目目录
 cd markmap-mcp-server
-
-# 构建项目
 npm install && npm run build
-
-# 运行服务器
+# 可选：启用服务端图片导出
+npx playwright install chromium
 node build/index.js
 ```
 
 ## 使用方法
 
-添加以下配置到您的 MCP 客户端配置文件中：
+将以下配置添加到 MCP 客户端（Cursor / Claude Desktop 等）：
 
 ```json
 {
@@ -65,55 +79,94 @@ node build/index.js
       "command": "npx",
       "args": ["-y", "@jinzcdev/markmap-mcp-server"],
       "env": {
-        "MARKMAP_DIR": "/path/to/output/directory"
+        "MARKMAP_DIR": "/path/to/output/directory",
+        "MARKMAP_OPEN": "false",
+        "MARKMAP_RETURN_MODE": "path"
       }
     }
   }
 }
 ```
 
-> [!TIP]
->
-> 服务支持以下环境变量：
->
-> - `MARKMAP_DIR`：指定思维导图的输出目录（可选，默认为系统临时目录）
->
-> **优先级说明**：
->
-> 当同时指定命令行参数 `--output` 和环境变量 `MARKMAP_DIR` 时，命令行参数优先。
+### 服务启动偏好（CLI / 环境变量）
+
+以下选项在**服务启动时**决定，**不是**工具入参：
+
+| 偏好       | CLI               | 环境变量              | 可选值                                               | 默认值           |
+| ---------- | ----------------- | --------------------- | ---------------------------------------------------- | ---------------- |
+| 输出目录   | `--output` / `-o` | `MARKMAP_DIR`         | 任意目录路径                                         | `~/.markmap-mcp` |
+| 打开浏览器 | `--open`          | `MARKMAP_OPEN`        | `true` \| `false`（CLI 仅需加 `--open` 表示开启）    | `false`          |
+| 返回模式   | `--return-mode`   | `MARKMAP_RETURN_MODE` | `path` \| `content` \| `both`                        | `path`           |
+| 离线 HTML  | `--offline`       | `MARKMAP_OFFLINE`     | `true` \| `false`（CLI 仅需加 `--offline` 表示开启） | `false`          |
+
+命令行参数优先于环境变量；`--output` 优先于 `MARKMAP_DIR`。
+
+生成的 HTML 固定包含 markmap 工具栏、英文导出按钮文案，并默认展开全部节点。
+
+### 示例提示词
+
+- 「把这篇设计文档整理成思维导图。」
+- 「将 `./notes/architecture.md` 转成导图。」
+- 「根据下面大纲生成 PNG 思维导图，直接在对话里展示。」
 
 ## 可用工具
 
-### markdown-to-mindmap
+### `markdown_to_mindmap`
 
-将 Markdown 文本转换为交互式思维导图。
+将 Markdown 转为交互式思维导图（可选导出图片）。
 
-**参数：**
+| 参数        | 类型                              | 默认值 | 说明                                         |
+| ----------- | --------------------------------- | ------ | -------------------------------------------- |
+| `markdown`  | string                            | —      | Markdown 内容（与 `inputPath` 至少提供一个） |
+| `inputPath` | string                            | —      | 本地 Markdown 文件绝对路径                   |
+| `format`    | `html` \| `png` \| `svg` \| `jpg` | `html` | 输出格式；图片格式需 Playwright              |
+| `filename`  | string                            | 自动   | 输出文件名（同名会覆盖）                     |
 
-- `markdown`：要转换的 Markdown 内容（必填字符串）
-- `open`：是否在浏览器中自动打开生成的思维导图（可选布尔值，默认为 false）
-
-**返回值：**
+**返回值（HTML，服务端 `returnMode=path`）：**
 
 ```json
 {
-  "content": [
-    {
-      "type": "text",
-      "text": "JSON_DATA_OF_MINDMAP_FILEPATH"
-    }
-  ]
+  "htmlFilePath": "/path/to/markmap-….html",
+  "filePath": "/path/to/markmap-….html"
 }
 ```
 
+**返回值（图片，服务端 `returnMode=both`）：** 含 `{htmlFilePath, filePath}` 的 JSON 文本，以及 MCP `image`（base64）内容块。
+
+> **说明：** 页面内的缩放/折叠与「Export PNG/JPG/SVG」按钮属于 **HTML 预览体验**。Agent 若要直接拿到图片，请使用工具参数 `format: png|jpg|svg`。
+
+### `list_mindmaps`
+
+列出输出目录中近期生成的导图文件。返回 `{outputDir, files: [{name, filePath, size, mtimeMs, mtime}]}`。
+
+### `get_mindmap`
+
+按绝对路径获取已生成的导图文件。
+
+| 参数       | 类型   | 默认值 | 说明                              |
+| ---------- | ------ | ------ | --------------------------------- |
+| `filePath` | string | —      | 导图文件（HTML 或图片）的绝对路径 |
+
+### `cleanup_mindmaps`
+
+按天数清理（或清空）输出目录中的导图文件。
+
+| 参数         | 类型    | 默认值  | 说明                                       |
+| ------------ | ------- | ------- | ------------------------------------------ |
+| `maxAgeDays` | number  | `7`     | 删除超过指定天数的文件                     |
+| `all`        | boolean | `false` | 为 true 时删除全部导图文件                 |
+| `dryRun`     | boolean | `false` | 为 true 时仅预览将被删除的文件，不实际删除 |
+
+### Prompt：`mindmap_from_content`
+
+辅助 Prompt：先将内容整理为层级 Markdown，再调用 `markdown_to_mindmap`。
+
 ## 相关项目
 
-🎉 探索更多思维导图工具：
-
-| 项目                                                                            | 说明                                                                                                                                                               |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **[MarkXMind Online](https://github.com/jinzcdev/markxmind)**                   | 用 Markdown 在线创建 XMind 思维导图。支持实时预览、一键导出为 `.xmind` / `.md` / `.png` / `.svg`，以及导入现有 XMind 文件。[立即体验 →](https://markxmind.js.org/) |
-| **[Obsidian MarkXMind Plugin](https://github.com/jinzcdev/obsidian-markxmind)** | Obsidian 插件，支持在 `xmind` 代码块中将 XMindMark 语法渲染为 XMind 思维导图。                                                                                     |
+| 项目                                                                            | 说明                                                                |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| **[MarkXMind Online](https://github.com/jinzcdev/markxmind)**                   | 用 Markdown 在线创建 XMind。[立即体验 →](https://markxmind.js.org/) |
+| **[Obsidian MarkXMind Plugin](https://github.com/jinzcdev/obsidian-markxmind)** | 在 Obsidian 中渲染 XMindMark 思维导图。                             |
 
 ## 许可证
 

@@ -10,10 +10,7 @@ export abstract class ToolRegistry extends RegistryBase {
         super(server, context);
     }
 
-    /**
-     * Registers all applicable tools based on site version and authentication status.
-     * This method follows a specific registration sequence to ensure proper tool organization.
-     */
+    /** Registers all tools for this registry. */
     public registerTools(): void {
         this.register();
     }
